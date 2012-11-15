@@ -10,10 +10,15 @@
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <cmath>
 
 using namespace std;
 using namespace boost::filesystem;
 
+
+//==============================================================================
+// Utilities
+//==============================================================================
 
 //------------------------------------------------------------------------------
 // A filesize in the range [0B and 16EiB).
@@ -22,6 +27,9 @@ using namespace boost::filesystem;
 struct FileSize {
    typedef long unsigned sizeType;
    static char const* prefix;
+   static char const* digit;
+   static unsigned sigdig;
+   static unsigned streamWidth () { return sigdig + 4; }
 
    sizeType bytes; // need 64 bits for files larger than 4GiB
 
@@ -42,6 +50,8 @@ struct FileSize {
    operator float () const { return static_cast<float>(bytes); }
 };
 char const* FileSize::prefix = "kMGTPE";
+char const* FileSize::digit = "0123456789";
+unsigned FileSize::sigdig = 5;
 
 //------------------------------------------------------------------------------
 // Prints a filesize in the correct IEC units.
@@ -51,16 +61,40 @@ ostream& operator<< (ostream& os, FileSize const& fs) {
 
    // if bytes, there is no prefix
    if (b < FileSize::sizeType(1024)) {
+      // should print this number like the ones below
       out << b << "  B";  // spaces ensure that units always take 3 chars
       return os << out.str();
    }
 
    // scale and prefix correctly for kilo, mega, giga, and peta bytes
-   unsigned shift = 20;
+   long unsigned shift = 20;
    for (unsigned i=0; i<5; ++i) {
       if ((b >> shift) == 0) {
          shift -= 10;
-         out << fixed << setprecision(1) << ((float)b / (1<<shift)) << FileSize::prefix[i] << "iB";
+         double scaled = static_cast<double>(b) / ((1ul << shift) * 1000ul);
+         int places = 0;
+         int digits = 0;
+         while (static_cast<int>(scaled) == 0) {
+            scaled *= 10;
+            ++places;
+         }
+         while (places <= 3) {
+            int d = static_cast<int>(scaled);
+            out << FileSize::digit[d];
+            scaled -= d;
+            scaled *= 10;
+            ++places;
+            ++digits;
+         }
+         out << '.';
+         while (digits < 5) {
+            int d = static_cast<int>(scaled);
+            out << FileSize::digit[d];
+            scaled -= d;
+            scaled *= 10;
+            ++digits;
+         }
+         out << FileSize::prefix[i] << "iB";
          return os << out.str();
       }
       shift += 10;
@@ -85,7 +119,7 @@ void copyFile (path const& srcpath, path const& dstpath, char* buf, unsigned buf
 
    // open files
    ifstream src(srcpath.c_str());
-   //ofstream dst(dstpath.c_str());
+   //ofstream dst(dstpath.c_str(), ios_base::out | ios_base::binary);
 
    cout << setw(s) << bytes_copied << '/' << setw(s) << bytes_total << " | " << srcpath << '\n';
    while (src) {
@@ -106,38 +140,87 @@ void copyFile (path const& srcpath, path const& dstpath, char* buf, unsigned buf
 }
 
 
+//==============================================================================
+// Modified Vectors (FileVector, DirVector, and FDPair)
+//==============================================================================
+
 //------------------------------------------------------------------------------
+// A vector of files that keeps track of the combined size of its contents.
 class FileVector : public vector<path> {
-private:
+protected:
    FileSize _bytes;
-   path _root;
 
 public:
    FileVector (): _bytes(0) {}
-
-   void setRoot (path const& r) { _root = r; }
-   path groundPath (path const& p) const { return _root / p; }
 
    void push_back (path const& p, path const& full) {
       _bytes += file_size(full);
       vector<path>::push_back(p);
    }
-   void push_back (path const& p) { push_back(p, _root / p); }
+
+   template <typename Func>
+   void push_back (path const& p, Func grounder) {
+      _bytes += file_size(grounder(p));
+   }
 
    void clear () {
       _bytes = 0;
       vector<path>::clear();
    }
 
+   unsigned files () const { return vector<path>::size(); }
    FileSize bytes () const { return _bytes; }
-   path const& root () const { return _root; }
+
+// this method has no use in FileVector, so we're making it inaccessible
+private:
+   void push_back (path const& p) {}
 };
 
 //------------------------------------------------------------------------------
-struct UniqueContent {
-   FileVector f;     // unique files
-   vector<path> d;   // unique directories
-   vector<path> e;   // exceptions (ie files that couldn't be copied or deleted)
+// A vector of directories that will tally the number and total size of all
+// children of its contents.
+class DirVector : public FileVector {
+private:
+   unsigned _files;
+
+public:
+   DirVector (): _files(0) {}
+
+   void push_back (path const& p) { vector<path>::push_back(p); }
+   template <typename Func> void annotate (Func grounder);
+   unsigned files () const { return _files; }
+
+// these methods have no use in DirVector, so we're making them inaccessible
+private:
+   void push_back (path const& p, path const& full) {}
+   template <typename Func> void push_back (path const& p, Func grounder) {} 
+};
+
+//------------------------------------------------------------------------------
+// Tallies up the number of files and bytes of children of the DirVector's contents.
+template <typename Func>
+void DirVector::annotate (Func grounder) {
+   _files = 0;
+   _bytes = 0;
+   for (unsigned i=0; i<size(); ++i) {
+      recursive_directory_iterator itr(grounder(FileVector::operator[](i)));
+      recursive_directory_iterator end;
+      while (itr != end) {
+         if (is_regular_file(itr->path())) {
+            ++_files;
+            _bytes += file_size(itr->path());
+         }
+         ++itr;
+      }
+   }
+}
+
+
+//------------------------------------------------------------------------------
+// A FileVector and DirVector working together.
+struct FDPair {
+   FileVector f;
+   DirVector  d;
 
    void add (path const& p, path const& fullPath) {
       if (is_regular_file(fullPath)) {
@@ -146,26 +229,50 @@ struct UniqueContent {
          d.push_back(p);
       }
    }
-   void add (path const& p) { add(p, f.groundPath(p)); }
+   template <typename Func> void add (path const& p, Func grounder) { add(p, grounder(p)); }
 
+   template <typename Func> void annotate (Func grounder) { d.annotate(grounder); }
+
+   unsigned ffiles () const { return f.files(); }
+   FileSize fbytes () const { return f.bytes(); }
+   unsigned dfiles () const { return d.files(); }
+   FileSize dbytes () const { return d.bytes(); }
+   unsigned files  () const { return ffiles() + dfiles(); }
+   FileSize bytes  () const { return fbytes() + dbytes(); }
+
+   void fprint () const;
+   void dprint () const;
    void print () const;
 };
 
-void UniqueContent::print () const {
-   cout << f.size() << " Files unique to " << f.root() << " (" << setw(9) << f.bytes() << ')' <<  ":\n";
+//------------------------------------------------------------------------------
+void FDPair::fprint () const {
+   cout << f.size() << " files totaling " << fbytes() << '.' << '\n';
    for (unsigned i=0; i<f.size(); ++i) {
       cout << f[i] << '\n';
    }
-   cout << d.size() << " Directories unique to " << f.root() << ":\n";
+   cout << '\n';
+}
+
+//------------------------------------------------------------------------------
+void FDPair::dprint () const {
+   cout << d.size() << " directories, containing " << dfiles() << " files (" << dbytes() << ")." << '\n';
    for (unsigned i=0; i<d.size(); ++i) {
       cout << d[i] << '\n';
    }
-   cout << e.size() << " Problems in " << f.root() << ":\n";
-   for (unsigned i=0; i<e.size(); ++i) {
-      cout << e[i] << '\n';
-   }
+   cout << '\n';
 }
 
+//------------------------------------------------------------------------------
+void FDPair::print () const {
+   fprint();
+   dprint();
+}
+
+
+//==============================================================================
+// DirectoryComparer
+//==============================================================================
 
 //------------------------------------------------------------------------------
 class DirectoryComparer {
@@ -173,22 +280,26 @@ public:
    path _p[2];
    path _extension;
 
-   UniqueContent _uc[2];   // files and directories unique to dir1 and dir2
-   vector<path>  _sf;      // files common to dir1 and dir2 (by name)
-   vector<path>  _sd;      // directories common to dir1 and dir2 (by name)
+   FDPair _uc[2];    // files and directories unique to dir1 and dir2
+   FDPair _sc;       // shared files and directories
+
+   vector<path> _sizeIssues; // shared files with different sizes
+   vector<path> _fdIssues;   // shared paths with file / directory mismatch
 
    vector<path> _temp1;
    vector<path> _temp2;
-   vector<path> _exceptions;
+
+   bool annotated = false;
+
+   bool ignore_hidden_files = true;
 
 public:
    DirectoryComparer (): _extension("") {}
    void setPaths (path const& p0, path const& p1) {
       _p[0] = p0;
       _p[1] = p1;
-      _uc[0].f.setRoot(p0);
-      _uc[1].f.setRoot(p1);
    }
+
 
 public:
    path workingPath (unsigned n)                const { return _p[n] / _extension; }
@@ -197,13 +308,15 @@ public:
    path groundPath  (path const& e, unsigned n) const { return _p[n] / e; }
 
    void compare ();
+   void recursiveCompare ();
    void copy ();
    void print () const;
 };
 
 //------------------------------------------------------------------------------
 void DirectoryComparer::compare () {
-   // clear temp vecs
+   // clear temp vecs and reset annotation
+   annotated = false;
    _temp1.clear();
    _temp2.clear();
 
@@ -211,10 +324,16 @@ void DirectoryComparer::compare () {
    directory_iterator end;
    directory_iterator itr;
    for (itr = directory_iterator(workingPath(0)); itr != end; ++itr) {
-      _temp1.push_back(itr->path().filename());
+      if ( ( is_regular_file(itr->path()) || is_directory(itr->path()) ) &&
+           ( ignore_hidden_files && (itr->path().filename().native()[0] != '.') ) ) {
+         _temp1.push_back(itr->path().filename());
+      }
    }
    for (itr = directory_iterator(workingPath(1)); itr != end; ++itr) {
-      _temp2.push_back(itr->path().filename());
+      if ( ( is_regular_file(itr->path()) || is_directory(itr->path()) ) &&
+           ( ignore_hidden_files && (itr->path().filename().native()[0] != '.') ) ) {
+         _temp2.push_back(itr->path().filename());
+      }
    }
 
    // sort temp vecs
@@ -229,6 +348,8 @@ void DirectoryComparer::compare () {
    path full0;
    path full1;
    path rel;
+   auto ground0 = [this] (path const& p) -> path { return groundPath(p, 0); };
+   auto ground1 = [this] (path const& p) -> path { return groundPath(p, 0); };
    if (itr1 != end1 && itr2 != end2) {
       full0 = fullPath(*itr1, 0);
       full1 = fullPath(*itr2, 1);
@@ -244,33 +365,30 @@ void DirectoryComparer::compare () {
             if (is_regular_file(full0)) {
                // *itr1 is file, *itr2 is file
                if (is_regular_file(full1)) {
-                  // Note that file content may differ,
-                  // and we don't ever test for this.
-                  _sf.push_back(rel);
+                  // test that filesizes match
+                  if (file_size(ground0(rel)) == file_size(ground1(rel))) {
+                     // Note that file content may still differ!
+                     // If this is an issue we can check modification dates or
+                     // store hashes (though file metadata is not currently duplicated).
+                     _sc.f.push_back(rel, ground0);
+                  } else {
+                     _sizeIssues.push_back(rel);
+                  }
                // *itr1 is file, *itr2 is not
                } else {
-                  _uc[0].f.push_back(rel);
-                  if (is_directory(full1)) {
-                     _uc[1].d.push_back(rel);
-                  }
+                  _fdIssues.push_back(rel);
                }
             // *itr1 is a dir
-            } else if (is_directory(full0)) {
+            } else {
                // *itr1 is dir, *itr2 is dir
                if (is_directory(full1)) {
-                  // note that directory contents may still differ;
-                  // we will address this later
-                  _sd.push_back(rel);
+                  // Note that directory contents may still differ;
+                  // we will address this later.
+                  _sc.d.push_back(rel);
                // *itr1 is dir, *itr2 is not
                } else {
-                  _uc[0].d.push_back(rel);
-                  if (is_regular_file(full1)) {
-                     _uc[1].f.push_back(rel);
-                  }
+                  _fdIssues.push_back(rel);
                }
-            // *itr1 is something else (symlink, etc)
-            } else {
-               _uc[1].add(rel, full1);
             }
             // advance
             ++itr1;
@@ -295,14 +413,24 @@ void DirectoryComparer::compare () {
    }
 
    // all remaining contents are unique
-   // (only one of these while loops ever executes)
+   // (only one of these while loop blocks ever executes)
    while (itr1 != end1) {
-      _uc[0].add(relPath(*itr1));
+      _uc[0].add(relPath(*itr1), ground0);
       ++itr1;
    }
    while (itr2 != end2) {
-      _uc[1].add(relPath(*itr2));
+      _uc[1].add(relPath(*itr2), ground1);
       ++itr2;
+   }
+}
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::recursiveCompare () {
+   compare();
+   while (_sc.d.size()) {
+      _extension = _sc.d.back();
+      _sc.d.pop_back();
+      compare();
    }
 }
 
@@ -313,8 +441,6 @@ void DirectoryComparer::copy () {
    FileSize copied = 0;          // number of bytes copied thus far
    unsigned totalFiles;          // total number of files to be copied
    FileSize totalBytes;          // total number of bytes to be copied
-   unsigned dfiles = 0;          // number of files in _uc[0].d
-   FileSize dbytes = 0;          // total size of files in _uc[0].d
    FileVector& f0 = _uc[0].f;    // for convenience
    vector<path>& d0 = _uc[0].d;  // for convenience
    path fullpath0;               // convenience (updated in loops)
@@ -323,21 +449,11 @@ void DirectoryComparer::copy () {
    unsigned new_warnings = 0;    // new exceptions encountered
    
    // precompute total number of files and bytes to be transferred
-   for (unsigned i=0; i<d0.size(); ++i) {
-      recursive_directory_iterator itr(groundPath(d0[i], 0));
-      recursive_directory_iterator end;
-      while (itr != end) {
-         if (is_regular_file(itr->path())) {
-            ++dfiles;
-            dbytes += file_size(itr->path());
-         }
-         ++itr;
-      }
-   }
+   _uc[0].annotate([this] (path const& p) { return groundPath(p, 0); });
 
    // print totals
-   totalFiles = f0.size() + dfiles;
-   totalBytes = f0.bytes() + dbytes;
+   totalFiles = _uc[0].files();
+   totalBytes = _uc[0].bytes();
    cout << "Copying " << totalFiles  << " files totaling " << totalBytes
         << " from " << workingPath(0) << " to " << workingPath(1) << ".\n";
    cout << "  Bytes Processed   |   Current File\n";
@@ -349,7 +465,7 @@ void DirectoryComparer::copy () {
       if (exists(fullpath1)) {
          // exception!
          ++new_warnings;
-         _uc[0].e.push_back(f0[i]);
+         //_uc[0].e.push_back(f0[i]);
          cout << "Warning: Cannot copy " << fullpath0 << " to " << fullpath1 << " because the latter already exists.\n";
          copied += file_size(fullpath0);
       } else {
@@ -384,7 +500,7 @@ void DirectoryComparer::copy () {
             if (exists(fullpath1)) {
                // exception!
                ++new_warnings;
-               _uc[0].e.push_back(connector / fullpath0.filename());
+               //_uc[0].e.push_back(connector / fullpath0.filename());
                cout << "Warning: Cannot copy " << fullpath0 << " to " << fullpath1 << " because the latter already exists.\n";
                copied += file_size(fullpath0);
             } else {
@@ -414,20 +530,24 @@ void DirectoryComparer::print () const {
    _uc[1].print();
    cout << '\n';
 
-   cout << _sf.size() << " Shared files:\n";
-   for (unsigned i=0; i<_sf.size(); ++i) {
-      cout << _sf[i] << '\n';
+   cout << _sc.f.size() << " Shared files:\n";
+   for (unsigned i=0; i<_sc.f.size(); ++i) {
+      cout << _sc.f[i] << '\n';
    }
-   cout << _sd.size() << " Shared directories:\n";
-   for (unsigned i=0; i<_sd.size(); ++i) {
-      cout << _sd[i] << '\n';
+   cout << _sc.d.size() << " Shared directories:\n";
+   for (unsigned i=0; i<_sc.d.size(); ++i) {
+      cout << _sc.d[i] << '\n';
    }
    cout << '\n';
 }
 
 
+//==============================================================================
+// main
+//==============================================================================
+
 //------------------------------------------------------------------------------
-int main (char** argv, int argc) {
+int main (int argc, char** argv) {
    
    /*
    path dir1a = path("/Volumes/Ryan Durkin/test1/dirdoc");
@@ -451,12 +571,13 @@ int main (char** argv, int argc) {
 
    try {
       path dir0 = path("/Volumes/Ryan Durkin/test1");
-      //path dir0 = path("/Users/erik/Documents/test1");
       path dir1 = path("/Volumes/Fabrizio/test2");
+      //path dir0 = path("/Users/erik/Documents/test1");
+      //path dir1 = path("/Users/erik/Documents/test2");
       DirectoryComparer dc;
       dc.setPaths(dir0, dir1);
 
-      dc.compare();
+      dc.recursiveCompare();
       dc.print();
       dc.copy();
       dc.print();
