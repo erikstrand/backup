@@ -8,9 +8,9 @@
 #include <iomanip>
 #include <vector>
 #include <algorithm>
-#include <boost/filesystem.hpp>
 #include <fstream>
 #include <cmath>
+#include <boost/filesystem.hpp>
 
 using namespace std;
 using namespace boost::filesystem;
@@ -108,26 +108,79 @@ ostream& operator<< (ostream& os, FileSize const& fs) {
 
 
 //------------------------------------------------------------------------------
-void copyFile (path const& srcpath, path const& dstpath, char* buf, unsigned bufs_per_update, FileSize& bytes_copied, FileSize bytes_total) {
-   static unsigned const s = 9; // spacing for filesizes
+struct CopyStatus {
+   static const unsigned fsw = 9;
 
+   FileSize bytes;
+   FileSize totalBytes;
+   FileSize fileBytes;
+   FileSize fileTotal;
+   //unsigned files;
+   unsigned totalFiles;
+   path srcPath;
+   path dstPath;
+   path dspPath;
+
+   CopyStatus (): bytes(0), totalBytes(0), fileBytes(0), totalFiles(0) {}
+};
+
+//------------------------------------------------------------------------------
+ostream& operator<< (ostream& os, CopyStatus const& s) {
+   return os << setw(s.fsw) << s.bytes << '/' << setw(s.fsw) << s.totalBytes << " | ";
+}
+   
+//------------------------------------------------------------------------------
+struct FileCopier {
+public:
+   char buf[BUFSIZ];
+   unsigned bufs_per_update;
+   unsigned fsw;
+   CopyStatus status;
+
+public:
+   FileCopier (): bufs_per_update(512000), fsw(9) {}
+   void startBatch (unsigned nFiles, FileSize nBytes);
+   void copy (path const& srcpath, path const& dstpath, path const& dsppath);
+   void copy (path const& srcpath, path const& dstpath) { copy(srcpath, dstpath, srcpath); }
+
+private:
+   void printStart  (CopyStatus const& s) const;
+   void printUpdate (CopyStatus const& s) const;
+};
+
+//------------------------------------------------------------------------------
+void FileCopier::startBatch (unsigned nFiles, FileSize nBytes) {
+   status.bytes = 0;
+   status.totalBytes = nBytes;
+   status.fileBytes = 0;
+   status.totalFiles = nFiles;
+}
+
+//------------------------------------------------------------------------------
+void FileCopier::copy (path const& srcpath, path const& dstpath, path const& dsppath) {
    // declare variables
    long unsigned buf_count = 0;
    long unsigned buf_trigger = bufs_per_update;
-   FileSize new_bytes = 0;
-   FileSize filesize = file_size(srcpath);
+   FileSize initialBytes = status.bytes;
+
+   // update status
+   status.fileTotal = file_size(srcpath);
+   status.srcPath = srcpath;
+   status.dstPath = dstpath;
+   status.dspPath = dsppath;
 
    // open files
    ifstream src(srcpath.c_str());
    //ofstream dst(dstpath.c_str(), ios_base::out | ios_base::binary);
 
-   cout << setw(s) << bytes_copied << '/' << setw(s) << bytes_total << " | " << srcpath << '\n';
+   printStart(status);
    while (src) {
       if (buf_count++ == buf_trigger) {
          buf_trigger += bufs_per_update;
-         new_bytes += bufs_per_update * BUFSIZ;
-         cout << setw(s) << (bytes_copied + new_bytes) << '/' << setw(s) << bytes_total << " | ";
-         cout << srcpath << " (" << setw(s) << new_bytes << '/' << setw(s) << filesize << ')' << '\n';
+         FileSize newbytes = bufs_per_update * BUFSIZ;
+         status.bytes += newbytes;
+         status.fileBytes += newbytes;
+         printUpdate(status);
       }
 
       src.read(buf, BUFSIZ);
@@ -136,7 +189,17 @@ void copyFile (path const& srcpath, path const& dstpath, char* buf, unsigned buf
 
    src.close();
    //dst.close();
-   bytes_copied += filesize;
+   status.bytes = initialBytes + status.fileTotal;
+}
+
+//------------------------------------------------------------------------------
+void FileCopier::printStart (CopyStatus const& s) const {
+   cout << s << "Copying " << s.dspPath << " (" << s.fileTotal << ')' << '\n';
+}
+
+//------------------------------------------------------------------------------
+void FileCopier::printUpdate (CopyStatus const& s) const {
+   cout << s << "..." << s.dspPath << " (" << s.fileBytes << '/' << s.fileTotal << ')' << '\n';
 }
 
 
@@ -160,7 +223,7 @@ public:
 
    template <typename Func>
    void push_back (path const& p, Func grounder) {
-      _bytes += file_size(grounder(p));
+      push_back(p, grounder(p));
    }
 
    void clear () {
@@ -276,7 +339,7 @@ void FDPair::print () const {
 
 //------------------------------------------------------------------------------
 class DirectoryComparer {
-public:
+private:
    path _p[2];
    path _extension;
 
@@ -300,8 +363,11 @@ public:
       _p[1] = p1;
    }
 
+   void summary ();
+   void status (bool p0, bool p1, bool ps, bool pi);
+   void backup ();
 
-public:
+private: 
    path workingPath (unsigned n)                const { return _p[n] / _extension; }
    path relPath     (path const& p)             const { return _extension / p; }
    path fullPath    (path const& p, unsigned n) const { return _p[n] / _extension / p; }
@@ -309,9 +375,52 @@ public:
 
    void compare ();
    void recursiveCompare ();
+   void annotate0      () { _uc[0].d.annotate([this] (path const& p) { return groundPath(p, 0); }); }
+   void annotate1      () { _uc[1].d.annotate([this] (path const& p) { return groundPath(p, 1); }); }
+   void annotateShared () { _sc.d.annotate([this] (path const& p) { return groundPath(p, 0); }); }
    void copy ();
-   void print () const;
+
+   void print0       () const;
+   void print1       () const;
+   void printShared  () const;
+   void printIssues  () const;
+   void printSummary () const;
 };
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::summary () {
+   recursiveCompare();
+   annotate0();
+   annotate1();
+   annotateShared();
+   printSummary();
+}
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::status (bool p0, bool p1, bool ps, bool pi) {
+   recursiveCompare();
+   if (p0) {
+      annotate0();
+      print0();
+   }
+   if (p1) {
+      annotate1();
+      print1();
+   }
+   if (ps) {
+      annotateShared();
+      printShared();
+   }
+   if (pi) {
+      printIssues();
+   }
+}
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::backup () {
+   recursiveCompare();
+   copy();
+}
 
 //------------------------------------------------------------------------------
 void DirectoryComparer::compare () {
@@ -349,7 +458,7 @@ void DirectoryComparer::compare () {
    path full1;
    path rel;
    auto ground0 = [this] (path const& p) -> path { return groundPath(p, 0); };
-   auto ground1 = [this] (path const& p) -> path { return groundPath(p, 0); };
+   auto ground1 = [this] (path const& p) -> path { return groundPath(p, 1); };
    if (itr1 != end1 && itr2 != end2) {
       full0 = fullPath(*itr1, 0);
       full1 = fullPath(*itr2, 1);
@@ -437,23 +546,20 @@ void DirectoryComparer::recursiveCompare () {
 //------------------------------------------------------------------------------
 void DirectoryComparer::copy () {
    // variables
-   char buf[BUFSIZ];             // buffer used for copying
-   FileSize copied = 0;          // number of bytes copied thus far
-   unsigned totalFiles;          // total number of files to be copied
-   FileSize totalBytes;          // total number of bytes to be copied
+   FileCopier copier;
    FileVector& f0 = _uc[0].f;    // for convenience
    vector<path>& d0 = _uc[0].d;  // for convenience
    path fullpath0;               // convenience (updated in loops)
    path fullpath1;               // convenience (updated in loops)
-   unsigned bufs_per_update = 512000; // updates screen every 500MiB
-   unsigned new_warnings = 0;    // new exceptions encountered
+   FileVector errors;            // holds files that we fail to copy
    
    // precompute total number of files and bytes to be transferred
-   _uc[0].annotate([this] (path const& p) { return groundPath(p, 0); });
+   annotate0();
 
-   // print totals
-   totalFiles = _uc[0].files();
-   totalBytes = _uc[0].bytes();
+   // prepare batch, print totals
+   unsigned totalFiles = _uc[0].files();
+   FileSize totalBytes = _uc[0].bytes();
+   copier.startBatch(totalFiles, totalBytes);
    cout << "Copying " << totalFiles  << " files totaling " << totalBytes
         << " from " << workingPath(0) << " to " << workingPath(1) << ".\n";
    cout << "  Bytes Processed   |   Current File\n";
@@ -463,13 +569,11 @@ void DirectoryComparer::copy () {
       fullpath0 = groundPath(f0[i], 0);
       fullpath1 = groundPath(f0[i], 1);
       if (exists(fullpath1)) {
-         // exception!
-         ++new_warnings;
-         //_uc[0].e.push_back(f0[i]);
+         // error!
+         errors.push_back(f0[i], fullpath0);
          cout << "Warning: Cannot copy " << fullpath0 << " to " << fullpath1 << " because the latter already exists.\n";
-         copied += file_size(fullpath0);
       } else {
-         copyFile(fullpath0, fullpath1, buf, bufs_per_update, copied, totalBytes);
+         copier.copy(fullpath0, fullpath1, f0[i]);
       }
    }
 
@@ -486,7 +590,8 @@ void DirectoryComparer::copy () {
          // update connector
          if (depth < itr.level()) {
             connector /= new_extension;
-            // mkdir
+            cout << copier.status << "Creating directory " << connector << '.' << '\n';
+            //create_directory(_p[1] / connector);
             ++depth;  // this makes depth equal to itr.level()
          } else while (depth > itr.level()) {
             connector.remove_filename();
@@ -498,13 +603,11 @@ void DirectoryComparer::copy () {
             fullpath0 = itr->path();
             fullpath1 = _p[1] / connector / fullpath0.filename();
             if (exists(fullpath1)) {
-               // exception!
-               ++new_warnings;
-               //_uc[0].e.push_back(connector / fullpath0.filename());
-               cout << "Warning: Cannot copy " << fullpath0 << " to " << fullpath1 << " because the latter already exists.\n";
-               copied += file_size(fullpath0);
+               // error!
+               errors.push_back(connector / fullpath0.filename(), fullpath0);
+               cout << copier.status << "Warning: Cannot copy " << fullpath0 << " to " << fullpath1 << " because the latter already exists.\n";
             } else {
-               copyFile(fullpath0, fullpath1, buf, bufs_per_update, copied, totalBytes);
+               copier.copy(fullpath0, fullpath1, connector / fullpath0.filename());
             }
          } else if (is_directory(itr->path())) {
             new_extension = itr->path().filename();
@@ -519,28 +622,66 @@ void DirectoryComparer::copy () {
 
    // print summary
    cout << setw(9) << totalBytes << '/' << setw(9) << totalBytes << " | ";
-   cout << totalFiles - new_warnings << " of " << totalFiles << " files were copied.\n";
+   cout << totalFiles - errors.size() << " of " << totalFiles << " files were copied.\n";
+   if (errors.size()) {
+      cout << "The following files were not copied:\n";
+      for (unsigned i=0; i<errors.size(); ++i) {
+         cout << errors[i] << '\n';
+      }
+   }
    cout << '\n';
 }
 
 //------------------------------------------------------------------------------
-void DirectoryComparer::print () const {
+void DirectoryComparer::print0 () const {
+   cout << "========== Unique to " << _p[0] << " ==========\n";
    _uc[0].print();
    cout << '\n';
+}
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::print1 () const {
+   cout << "========== Unique to " << _p[1] << " ==========\n";
    _uc[1].print();
    cout << '\n';
+}
 
-   cout << _sc.f.size() << " Shared files:\n";
-   for (unsigned i=0; i<_sc.f.size(); ++i) {
-      cout << _sc.f[i] << '\n';
-   }
-   cout << _sc.d.size() << " Shared directories:\n";
-   for (unsigned i=0; i<_sc.d.size(); ++i) {
-      cout << _sc.d[i] << '\n';
+//------------------------------------------------------------------------------
+void DirectoryComparer::printShared () const {
+   cout << "========== Common ==========\n";
+   _sc.print();
+   cout << '\n';
+}
+
+//------------------------------------------------------------------------------
+void DirectoryComparer::printIssues () const {
+   if (_sizeIssues.size() || _fdIssues.size()) {
+      cout << "========== Issues ==========\n";
+      for (path const& p : _sizeIssues) {
+         cout << p << " is "  << file_size(groundPath(p, 0)) << " in " << _p[0]
+                   << " but " << file_size(groundPath(p, 1)) << " in " << _p[1] << '.' << '\n';
+      }
+      for (path const& p : _fdIssues) {
+         if (is_regular_file(groundPath(p, 0))) {
+            cout << p << " is a file in " << _p[0] << " but a directory in " << _p[1] << '.' << '\n';
+         } else {
+            cout << p << " is a directory in " << _p[0] << " but a file in " << _p[1] << '.' << '\n';
+         }
+      }
+   } else {
+      cout << "No issues detected. Backup should run smoothly.\n";
    }
    cout << '\n';
 }
 
+//------------------------------------------------------------------------------
+void DirectoryComparer::printSummary () const {
+   cout << "Backup Summary:\n";
+   cout << setw(5) << _uc[0].files() << " files (" << setw(9) << _uc[0].bytes() << ") are to be copied.\n";
+   cout << setw(5) << _uc[1].files() << " files (" << setw(9) << _uc[1].bytes() << ") are to be deleted.\n";
+   cout << setw(5) << _sc.files()    << " files (" << setw(9) << _sc.bytes() << ") are already backed up.\n";
+   cout << setw(5) << _sizeIssues.size() + _fdIssues.size() << " files are in conflict.\n";
+}
 
 //==============================================================================
 // main
@@ -577,10 +718,10 @@ int main (int argc, char** argv) {
       DirectoryComparer dc;
       dc.setPaths(dir0, dir1);
 
-      dc.recursiveCompare();
-      dc.print();
-      dc.copy();
-      dc.print();
+      dc.summary();
+      cout << '\n';
+      dc.status(false, false, true, true);
+      //dc.copy();
    }
    catch (...) {
       cout << "An error occurred!\n";
