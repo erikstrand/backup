@@ -17,6 +17,23 @@ namespace bfs = boost::filesystem;
 //==============================================================================
 
 //------------------------------------------------------------------------------
+/*
+ * Note: FileCopier copies files using an ifstream, an ofstream,
+ * and an intermediate buffer. As a result, file metadata is NOT copied.
+ * However, fstreams make it very easy to determine progress while copying
+ * large files - just count how many buffers you have transferred.
+ *
+ * Additionally, though fstreams are pretty efficient,
+ * faster methods are available if you use platform-dependent methods –
+ * the linux system call splice is probably the standout option.
+ * Furthermore splice can be used in a loop, thus preserving our progress updates.
+ *
+ * Finally, I have not tested to see what buffer size is ideal (BUFSIZ seems to
+ * 1024 bytes, which seems very small). I would rather start using splice than
+ * spend time optimizing a slower method.
+ */
+
+//------------------------------------------------------------------------------
 struct CopyStatus {
    static const unsigned fsw = 9;
 
@@ -146,6 +163,14 @@ struct FDPair {
 //==============================================================================
 // DirectoryComparer
 //==============================================================================
+
+//------------------------------------------------------------------------------
+/*
+ * Note: The method recursiveCopy is only one of many ways to use copy.
+ * In particular, the methods of this class are designed so that instead of
+ * annotating all the files that will be copied (or deleted), you can copy and
+ * delete as you explore into deeper and deeper directories.
+ */
 
 //------------------------------------------------------------------------------
 class DirectoryComparer {
