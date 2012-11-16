@@ -41,9 +41,12 @@ public:
    unsigned bufs_per_update;
    unsigned fsw;
    CopyStatus status;
+   // when in safe mode no files are created, altered, or deleted
+   bool safe_mode;
 
 public:
-   FileCopier (): bufs_per_update(512000), fsw(9) {}
+   FileCopier (): bufs_per_update(512000), fsw(9), safe_mode(false) {}
+   FileCopier (bool safe): bufs_per_update(512000), fsw(9), safe_mode(safe) {}
    void startBatch (unsigned nFiles, FileSize nBytes);
    void copy (bfs::path const& srcpath, bfs::path const& dstpath, bfs::path const& dsppath);
    void copy (bfs::path const& srcpath, bfs::path const& dstpath) { copy(srcpath, dstpath, srcpath); }
@@ -167,10 +170,13 @@ private:
 
    unsigned _annotations;
 
-   bool ignore_hidden_files = true;
+   bool ignore_hidden_files;
+   // when in safe mode no files are created, altered, or deleted
+   bool safe_mode;
 
 public:
-   DirectoryComparer (): _extension(""), _annotations(0) {}
+   DirectoryComparer (): _extension(""), _annotations(0), ignore_hidden_files(true) {}
+   void setSafeMode (bool safe) { safe_mode = safe; }
    void setPaths (bfs::path const& p0, bfs::path const& p1) {
       _p[0] = p0;
       _p[1] = p1;

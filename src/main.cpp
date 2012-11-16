@@ -109,6 +109,7 @@ int main (int argc, char** argv) {
 
       // Create DirectoryComparer and set directories.
       DirectoryComparer dc;
+      dc.setSafeMode(true);
       dc.setPaths(dirA, dirB);
 
       if (summary) {

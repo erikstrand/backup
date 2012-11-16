@@ -43,7 +43,8 @@ void FileCopier::copy (path const& srcpath, path const& dstpath, path const& dsp
 
    // open files
    ifstream src(srcpath.c_str());
-   //ofstream dst(dstpath.c_str(), ios_base::out | ios_base::binary); // touches filesystem
+   ofstream dst;
+   if (!safe_mode) dst.open(dstpath.c_str(), ios_base::out | ios_base::binary);
 
    printStart(status);
    while (src) {
@@ -56,11 +57,11 @@ void FileCopier::copy (path const& srcpath, path const& dstpath, path const& dsp
       }
 
       src.read(buf, BUFSIZ);
-      //dst.write(buf, src.gcount()); // touches filesystem
+      if (!safe_mode) dst.write(buf, src.gcount());
    }
 
    src.close();
-   //dst.close(); // error unless dst has been declared (so pseudo-touches filesystem)
+   if (!safe_mode) dst.close();
    status.bytes = initialBytes + status.fileTotal;
 }
 
@@ -291,7 +292,7 @@ void DirectoryComparer::recursiveCompare () {
 //------------------------------------------------------------------------------
 void DirectoryComparer::copy () {
    // variables
-   FileCopier copier;
+   FileCopier copier(safe_mode);
    FileVector& f0 = _uc[0].f;    // for convenience
    vector<path>& d0 = _uc[0].d;  // for convenience
    path fullpath0;               // convenience (updated in loops)
@@ -338,7 +339,7 @@ void DirectoryComparer::copy () {
          if (depth < itr.level()) {
             connector /= new_extension;
             cout << copier.status << "Creating directory " << connector << '.' << '\n';
-            //create_directory(_p[1] / connector);  // touches filesystem
+            if (!safe_mode) create_directory(_p[1] / connector);
             ++depth;  // this makes depth equal to itr.level()
          } else while (depth > itr.level()) {
             connector.remove_filename();
