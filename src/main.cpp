@@ -92,8 +92,8 @@ int main (int argc, char** argv) {
    if (vm.count("show-b"))      { showB      = true; }
    if (vm.count("show-mutual")) { showMutual = true; }
    if (vm.count("show-issues")) { showIssues = true; }
-   if (vm.count("copy"))        { copy = true; }
-   if (vm.count("delete"))      { del = true; }
+   if (vm.count("copy"))        { copy       = true; }
+   if (vm.count("delete"))      { del        = true; }
 
    // Execute the requested actions.
    try {
@@ -109,7 +109,7 @@ int main (int argc, char** argv) {
 
       // Create DirectoryComparer and set directories.
       DirectoryComparer dc;
-      dc.setSafeMode(true);
+      dc.setSafeMode(false);
       dc.setPaths(dirA, dirB);
 
       if (summary) {
@@ -120,8 +120,8 @@ int main (int argc, char** argv) {
          dc.status(showA, showB, showMutual, showIssues);
       }
 
-      if (copy) {
-         dc.backup();
+      if (copy || del) {
+         dc.backup(copy, del);
       }
 
       /*

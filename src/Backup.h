@@ -184,7 +184,7 @@ public:
 
    void summary ();
    void status (bool p0, bool p1, bool ps, bool pi);
-   void backup ();
+   void backup (bool c, bool d);
 
 private: 
    bfs::path workingPath (unsigned n)                     const { return _p[n] / _extension; }
@@ -198,6 +198,7 @@ private:
    inline void annotate1 ();
    inline void annotateMutual ();
    void copy ();
+   void del ();
 
    void print0       () const;
    void print1       () const;

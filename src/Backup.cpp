@@ -159,9 +159,10 @@ void DirectoryComparer::status (bool p0, bool p1, bool ps, bool pi) {
 }
 
 //------------------------------------------------------------------------------
-void DirectoryComparer::backup () {
+void DirectoryComparer::backup (bool c, bool d) {
    recursiveCompare();
-   copy();
+   if (c) copy();
+   if (d) del();
 }
 
 //------------------------------------------------------------------------------
@@ -306,6 +307,7 @@ void DirectoryComparer::copy () {
    unsigned totalFiles = _uc[0].files();
    FileSize totalBytes = _uc[0].bytes();
    copier.startBatch(totalFiles, totalBytes);
+   cout << "========== Copying Files from A to B ==========\n";
    cout << "Copying " << totalFiles  << " files totaling " << totalBytes
         << " from " << workingPath(0) << " to " << workingPath(1) << ".\n";
    cout << "  Bytes Processed   |   Current File\n";
@@ -333,6 +335,8 @@ void DirectoryComparer::copy () {
       recursive_directory_iterator itr(groundPath(d0[i], 0));
       depth = 0;
       connector = d0[i];
+      cout << copier.status << "Creating directory " << connector << '.' << '\n';
+      if (!safe_mode) create_directory(_p[1] / connector);
 
       while (itr != end) {
          // update connector
@@ -382,6 +386,33 @@ void DirectoryComparer::copy () {
 }
 
 //------------------------------------------------------------------------------
+void DirectoryComparer::del () {
+   // precompute total number of files and bytes to be transferred
+   annotate1();
+
+   // prepare batch, print totals
+   unsigned totalFiles = _uc[1].files();
+   FileSize totalBytes = _uc[1].bytes();
+   cout << "========== Deleting Files from B ==========\n";
+   cout << "Removing " << totalFiles  << " files totaling " << totalBytes
+        << " from " << workingPath(1) << ".\n";
+
+   // delete files in _uc[1].f
+   path grounded;
+   for (path const& p : _uc[1].f) {
+      grounded = groundPath(p, 1);
+      cout << "Removing " << p << " (" << FileSize(file_size(grounded)) << ").\n";
+      if (!safe_mode) remove(grounded);
+   }
+
+   // delete files in _uc[1].d
+   for (path const& p : _uc[1].d) {
+      cout << "Removing " << p << ".\n";
+      if (!safe_mode) remove_all(groundPath(p, 1));
+   }
+}
+
+//------------------------------------------------------------------------------
 void DirectoryComparer::print0 () const {
    cout << "========== Unique to " << _p[0] << " ==========\n";
    _uc[0].print();
@@ -401,8 +432,8 @@ void DirectoryComparer::printShared () const {
 
 //------------------------------------------------------------------------------
 void DirectoryComparer::printIssues () const {
+   cout << "========== Issues ==========\n";
    if (_sizeIssues.size() || _fdIssues.size()) {
-      cout << "========== Issues ==========\n";
       for (path const& p : _sizeIssues) {
          cout << "  * " << p << " is "  << FileSize(file_size(groundPath(p, 0))) << " in " << _p[0]
               << " but " << FileSize(file_size(groundPath(p, 1))) << " in " << _p[1] << '.' << '\n';
