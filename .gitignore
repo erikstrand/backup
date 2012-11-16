@@ -1,5 +1,5 @@
 # ignore binary
-backup
+bin/
 
 # ignore .swp files
 *.swp
