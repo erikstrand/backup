@@ -23,15 +23,16 @@ int main (int argc, char** argv) {
    po::options_description opts("Allowed options");
    opts.add_options()
        ("help",          "Print a help message.")
-       ("summary,s",     "Print a summary. This is a condensed version of -abmi")
+       ("outline,o",     "Print a four line outline of -abmi")
        ("show-a,a",      "Print files unique to directory A. These will be copied if invoked with -c.")
        ("show-b,b",      "Print files unique to directory B. These will be deleted if invoked with -d.")
        ("show-mutual,m", "Print files that are in both directories.")
        ("show-issues,i", "Print file conflicts that must be manually resolved.")
        ("copy,c",        "Copy directory A's unique files to directory B.")
        ("delete,d",      "Delete directory B's unique files.")
+       ("safe,s",        "Run in Safe Mode: no files are created, modified, or removed.")
        ("dir_a",         "Directory A - the directory that should be backed up.")
-       ("dir_b",         "Directory B - the directory where the backup is (or will be) located.")
+       ("dir_b",         "Directory B - the directory where the backup copy is (or will be) located.")
    ;
 
    // Declare positional arguments.
@@ -80,40 +81,33 @@ int main (int argc, char** argv) {
    }
 
    // Extract flags for which commands are requested.
-   bool summary    = false;
+   bool outline    = false;
    bool showA      = false;
    bool showB      = false;
    bool showMutual = false;
    bool showIssues = false;
    bool copy       = false;
    bool del        = false;
-   if (vm.count("summary"))     { summary    = true; }
+   bool safe       = false;
+   if (vm.count("outline"))     { outline    = true; }
    if (vm.count("show-a"))      { showA      = true; }
    if (vm.count("show-b"))      { showB      = true; }
    if (vm.count("show-mutual")) { showMutual = true; }
    if (vm.count("show-issues")) { showIssues = true; }
    if (vm.count("copy"))        { copy       = true; }
    if (vm.count("delete"))      { del        = true; }
+   if (vm.count("safe"))        { safe       = true; }
+
 
    // Execute the requested actions.
    try {
-      //path dir0 = path("/Volumes/Ryan Durkin/test1");
-      //path dir1 = path("/Volumes/Fabrizio/test2");
-      /*
-      path dirA = path("/Users/erik/Documents/test1");
-      path dirB = path("/Users/erik/Documents/test2");
-      summary = true;
-      showA = true;
-      copy = true;
-      */
-
       // Create DirectoryComparer and set directories.
       DirectoryComparer dc;
-      dc.setSafeMode(false);
+      dc.setSafeMode(safe);
       dc.setPaths(dirA, dirB);
 
-      if (summary) {
-         dc.summary();
+      if (outline) {
+         dc.outline();
       }
 
       if (showA || showB || showMutual || showIssues) {
@@ -123,12 +117,6 @@ int main (int argc, char** argv) {
       if (copy || del) {
          dc.backup(copy, del);
       }
-
-      /*
-      if (del) {
-         dc.clear();
-      }
-      */
    }
    catch (...) {
       cout << "An unexpected error occurred! Were any files in either directory modified during execution?\n";

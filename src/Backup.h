@@ -182,7 +182,7 @@ public:
       _p[1] = p1;
    }
 
-   void summary ();
+   void outline ();
    void status (bool p0, bool p1, bool ps, bool pi);
    void backup (bool c, bool d);
 
@@ -204,7 +204,7 @@ private:
    void print1       () const;
    void printShared  () const;
    void printIssues  () const;
-   void printSummary () const;
+   void printOutline () const;
 };
 
 //------------------------------------------------------------------------------

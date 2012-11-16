@@ -130,12 +130,12 @@ void FDPair::print () const {
 //==============================================================================
 
 //------------------------------------------------------------------------------
-void DirectoryComparer::summary () {
+void DirectoryComparer::outline () {
    recursiveCompare();
    annotate0();
    annotate1();
    annotateMutual();
-   printSummary();
+   printOutline();
 }
 
 //------------------------------------------------------------------------------
@@ -373,7 +373,7 @@ void DirectoryComparer::copy () {
    _uc[0].d.clear();
    _annotations &= ~A0;
 
-   // print summary
+   // print outline
    cout << setw(9) << totalBytes << '/' << setw(9) << totalBytes << " | ";
    cout << totalFiles - errors.size() << " of " << totalFiles << " files were copied.\n";
    if (errors.size()) {
@@ -427,7 +427,10 @@ void DirectoryComparer::print1 () const {
 //------------------------------------------------------------------------------
 void DirectoryComparer::printShared () const {
    cout << "========== Common to " << _p[0] << " and " << _p[1] << " ==========\n";
-   _sc.print();
+   _sc.fprint();
+   if (!(_annotations & RC)) {
+      _sc.dprint();
+   }
 }
 
 //------------------------------------------------------------------------------
@@ -453,8 +456,8 @@ void DirectoryComparer::printIssues () const {
 }
 
 //------------------------------------------------------------------------------
-void DirectoryComparer::printSummary () const {
-   cout << "========== Summary ==========\n";
+void DirectoryComparer::printOutline () const {
+   cout << "========== Outline ==========\n";
    cout << "Directory A: " << _p[0] << '\n';
    cout << "Directory B: " << _p[1] << '\n';
    cout << setw(5) << _uc[0].files() << " files (" << setw(9) << _uc[0].bytes() << ") are to be copied.\n";
